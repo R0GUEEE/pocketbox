@@ -83,11 +83,14 @@ func (e *Engine) Start(ref string) error {
 }
 
 func (e *Engine) supervise(id string, r *running) {
-	// Tag every log line this container writes with its timestamp prefix so
-	// docker logs -t can be served without buffering the whole file.
 	code, err := r.proc.Wait()
+	// Wait must not report before the log file is complete; the runner owns
+	// that finalisation, so err is only an explanation, never a failure here.
 	close(r.cancel)
 	e.runState().Delete(id)
+	if code < 0 {
+		code = 1
+	}
 	msg := ""
 	if err != nil {
 		msg = err.Error()

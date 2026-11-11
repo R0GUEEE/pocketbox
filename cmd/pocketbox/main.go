@@ -289,7 +289,10 @@ func cmdRun(args []string) (int, error) {
 		case strings.HasPrefix(a, "-"):
 			return 2, fmt.Errorf("run: unknown option %s", a)
 		default:
-			rest = append(args[i:], rest...)
+			// The first bare argument is the image; everything after it is the
+			// container command, even when it looks like an option
+			// (`docker run alpine ls -l /`).
+			rest = append(rest, args[i:]...)
 			i = len(args)
 		}
 	}
