@@ -77,10 +77,14 @@ func (r *Runner) Start(spec *engine.Spec) (engine.Process, error) {
 		}
 	}
 	cmd.Env = spec.Env
-	cmd.Dir = spec.Workdir
-	if cmd.Dir == "" {
-		cmd.Dir = spec.RootFS
+	// Containers see the image as "/". Without chroot (iSH host builds) the
+	// best available equivalent is starting in the image and running the
+	// program directly, which keeps absolute paths inside the image for
+	// anything the program opens relative to a path it just received.
+	if spec.Workdir != "" && spec.Workdir != "/" {
+		return nil, fmt.Errorf("native: working directories other than / need a chroot-capable host")
 	}
+	cmd.Dir = spec.RootFS
 	cmd.SysProcAttr = procAttr()
 
 	logPath := filepath.Join(r.LogDir, spec.Container.ID+".log")
@@ -176,3 +180,4 @@ func PortsOf(specs []string) ([]engine.PortBinding, error) {
 
 var _ engine.Runner = (*Runner)(nil)
 var _ = context.Background
+

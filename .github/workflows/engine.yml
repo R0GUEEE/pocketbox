@@ -38,11 +38,14 @@ jobs:
           /tmp/pocketbox pull busybox:1.36
           /tmp/pocketbox images
           /tmp/pocketbox ps -a
-          /tmp/pocketbox run -d --name smoke busybox:1.36 /bin/sh -c 'echo smoke-ok; sleep 1'
+          # Same shape as `docker run busybox cat file | head`: no ENTRYPOINT in
+          # the image, so the command line runs as written.
+          /tmp/pocketbox run smoke busybox:1.36 /bin/sh -c 'cat /dev/urandom | head -c 5 | wc -c'
+          /tmp/pocketbox run -d --name smoke busybox:1.36 /bin/sh -c 'cat /dev/urandom | head -c 5 | wc -c'
           sleep 2
           /tmp/pocketbox logs smoke
           /tmp/pocketbox ps -a
-          /tmp/pocketbox logs smoke | grep -q smoke-ok
+          /tmp/pocketbox logs smoke | grep -q '^5$'
 
       - name: daemon API
         run: |
