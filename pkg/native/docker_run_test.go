@@ -28,7 +28,10 @@ func TestDockerRunJoin(t *testing.T) {
 	}
 	e, _ := engine.New(l, imgs)
 	e.Runner = native.New(l.Logs())
-	for _, tc := range []struct{ name string; cmd []string }{
+	for _, tc := range []struct {
+		name string
+		cmd  []string
+	}{
 		{"pipeline", []string{"/bin/sh", "-c", "cat /dev/urandom | head -c 5 | wc -c"}},
 		{"stdout", []string{"/bin/sh", "-c", "echo plain"}},
 	} {
