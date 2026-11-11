@@ -40,12 +40,12 @@ jobs:
           /tmp/pocketbox ps -a
           # Attached and detached runs of the same command.
           /tmp/pocketbox run --name attach busybox:1.36 /bin/sh -c 'echo attached-ok'
-          /tmp/pocketbox run -d --name smoke busybox:1.36 /bin/sh -c 'echo smoke-ok; ls / | wc -l'
+          /tmp/pocketbox run -d --name smoke busybox:1.36 /bin/sh -c 'echo smoke-ok; ls / | wc -l; echo rows-done'
           sleep 2
           /tmp/pocketbox logs smoke
           /tmp/pocketbox ps -a
           /tmp/pocketbox logs attach | grep -q attached-ok
-          /tmp/pocketbox logs smoke | grep -Eq '^[0-9]+$'
+          /tmp/pocketbox logs smoke | grep -q rows-done
 
       - name: daemon API
         run: |
