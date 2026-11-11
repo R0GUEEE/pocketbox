@@ -81,7 +81,7 @@ func (r *Runner) Start(spec *engine.Spec) (engine.Process, error) {
 	if cmd.Dir == "" {
 		cmd.Dir = spec.RootFS
 	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
+	cmd.SysProcAttr = procAttr()
 
 	logPath := filepath.Join(r.LogDir, spec.Container.ID+".log")
 	if err := os.MkdirAll(r.LogDir, 0o755); err != nil {
@@ -91,8 +91,9 @@ func (r *Runner) Start(spec *engine.Spec) (engine.Process, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd.Stdout = &prefixWriter{w: logf, prefix: ""}
-	cmd.Stderr = cmd.Stdout
+	pw := &prefixWriter{w: logf, prefix: ""}
+	cmd.Stdout = pw
+	cmd.Stderr = pw
 	if err := cmd.Start(); err != nil {
 		logf.Close()
 		return nil, err
