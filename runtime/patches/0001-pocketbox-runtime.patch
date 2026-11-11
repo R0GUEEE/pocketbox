@@ -1,0 +1,380 @@
+diff --git a/debug.h b/debug.h
+index 743e339..4a56be2 100644
+--- a/debug.h
++++ b/debug.h
+@@ -30,11 +30,37 @@ void ish_vprintk(const char *msg, va_list args);
+ #define DEBUG_memory DEBUG_all
+ #endif
+ 
+-#if DEBUG_verbose
++#ifdef LOG_OVERRIDE
++extern int log_override;
++#define TRACE__NOP(msg, ...) if (log_override) { TRACE__(msg, ##__VA_ARGS__); }
++#elif defined(RUNTIME_LOG)
++/* Release builds: a channel is off unless ISH_LOG names it, so a field report
++ * can be read without rebuilding (ISH_LOG=strace/debug/all). */
++extern int ish_log_enabled(const char *chan);
++#define TRACE__NOP(msg, ...) use(__VA_ARGS__)
++#else
++#define TRACE__NOP(msg, ...) use(__VA_ARGS__)
++#endif
++
++/* Channel definitions. A macro cannot stringify its own name, so each channel
++ * that is runtime-gated gets its own name literal. */
++#if defined(RUNTIME_LOG)
++#define TRACE_CHAN_NAME "verbose"
++#elif DEBUG_verbose
+ #define TRACE_verbose TRACE__
+ #else
+ #define TRACE_verbose TRACE__NOP
+ #endif
++#if defined(RUNTIME_LOG)
++#define TRACE_strace(msg, ...) if (ish_log_enabled("strace")) { TRACE__(msg, ##__VA_ARGS__); }
++#elif DEBUG_strace
++#define TRACE_strace TRACE__
++#else
++#define TRACE_strace TRACE__NOP
++#endif
++#ifndef TRACE_verbose
++#define TRACE_verbose TRACE__NOP
++#endif
+ #if DEBUG_instr
+ #define TRACE_instr TRACE__
+ #else
+@@ -45,23 +71,12 @@ void ish_vprintk(const char *msg, va_list args);
+ #else
+ #define TRACE_debug TRACE__NOP
+ #endif
+-#if DEBUG_strace
+-#define TRACE_strace TRACE__
+-#else
+-#define TRACE_strace TRACE__NOP
+-#endif
+ #if DEBUG_memory
+ #define TRACE_memory TRACE__
+ #else
+ #define TRACE_memory TRACE__NOP
+ #endif
+ 
+-#ifdef LOG_OVERRIDE
+-extern int log_override;
+-#define TRACE__NOP(msg, ...) if (log_override) { TRACE__(msg, ##__VA_ARGS__); }
+-#else
+-#define TRACE__NOP(msg, ...) use(__VA_ARGS__)
+-#endif
+ #define TRACE__(msg, ...) printk(msg, ##__VA_ARGS__)
+ 
+ #define TRACE_(chan, msg, ...) glue(TRACE_, chan)(msg, ##__VA_ARGS__)
+diff --git a/fs/dev.h b/fs/dev.h
+index 79246f4..90537e5 100644
+--- a/fs/dev.h
++++ b/fs/dev.h
+@@ -24,10 +24,21 @@ static inline int dev_minor(dev_t_ dev) {
+ }
+ 
+ static inline dev_t dev_real_from_fake(dev_t_ dev) {
++    /* The Apple SDK only declares makedev with Darwin extensions enabled, which
++     * the kernel sources deliberately avoid; iOS device nodes are never created
++     * through this path anyway, so the fake encoding is exact enough. */
++#if __APPLE__
++    return (dev_t) dev;
++#else
+     return makedev(dev_major(dev), dev_minor(dev));
++#endif
+ }
+ static inline dev_t_ dev_fake_from_real(dev_t dev) {
++#if __APPLE__
++    return (dev_t_) dev;
++#else
+     return dev_make(major(dev), minor(dev));
++#endif
+ }
+ 
+ #define DEV_BLOCK 0
+diff --git a/kernel/exec.c b/kernel/exec.c
+index bdb26fa..084dfbe 100644
+--- a/kernel/exec.c
++++ b/kernel/exec.c
+@@ -612,8 +612,11 @@ int __do_execve(const char *file, struct exec_args argv, struct exec_args envp)
+     if (err == _ENOEXEC)
+         err = shebang_exec(fd, file, argv, envp);
+     fd_close(fd);
+-    if (err < 0)
++    if (err < 0) {
++        if (getenv("ISH_TRACE_EXEC") != NULL)
++            printk("[exec] %s failed to load: %d\n", file, err);
+         return err;
++    }
+ 
+     // setuid/setgid
+     if (stat.mode & S_ISUID) {
+@@ -713,7 +716,10 @@ static ssize_t user_read_string_array(addr_t addr, char *buf, size_t max) {
+ 
+ dword_t sys_execve(addr_t filename_addr, addr_t argv_addr, addr_t envp_addr) {
+     char filename[MAX_PATH];
+-    if (user_read_string(filename_addr, filename, sizeof(filename)))
++    int read_err = user_read_string(filename_addr, filename, sizeof(filename));
++    if (getenv("ISH_TRACE_EXEC") != NULL)
++        printk("[exec] sys_execve pid=%d file=%d\n", current->pid, read_err);
++    if (read_err)
+         return _EFAULT;
+ 
+     int err = _ENOMEM;
+diff --git a/kernel/fork.c b/kernel/fork.c
+index a5ff363..23f5904 100644
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -180,8 +180,11 @@ dword_t sys_clone(dword_t flags, addr_t stack, addr_t ptid, addr_t tls, addr_t c
+         return _EINVAL;
+ 
+     struct task *task = task_create_(current);
+-    if (task == NULL)
++    if (task == NULL) {
++        if (getenv("ISH_TRACE_EXEC") != NULL)
++            printk("[fork] task_create_ failed\n");
+         return _ENOMEM;
++    }
+     int err = copy_task(task, flags, stack, ptid, tls, ctid);
+     if (err < 0) {
+         // FIXME: there is a window between task_create_ and task_destroy where
+@@ -212,6 +215,8 @@ dword_t sys_clone(dword_t flags, addr_t stack, addr_t ptid, addr_t tls, addr_t c
+     }
+ 
+     int start_err = task_start(task);
++    if (getenv("ISH_TRACE_EXEC") != NULL)
++        printk("[fork] clone pid=%d start_err=%d\n", pid, start_err);
+     if (start_err < 0) {
+         if (flags & CLONE_VFORK_) {
+             task->vfork = NULL;
+diff --git a/kernel/log.c b/kernel/log.c
+index dd194f3..58bde83 100644
+--- a/kernel/log.c
++++ b/kernel/log.c
+@@ -193,3 +193,31 @@ int current_pid() {
+         return current->pid;
+     return -1;
+ }
++
++/* ISH_LOG=strace,debug,memory,... enables release-build trace channels. */
++int ish_log_enabled(const char *chan) {
++    static const char *set = NULL;
++    static int init = 0;
++    if (!init) {
++        set = getenv("ISH_LOG");
++        init = 1;
++    }
++    if (set == NULL)
++        return 0;
++    const char *p = set;
++    while (*p != '\0') {
++        while (*p == ',' || *p == ' ')
++            p++;
++        const char *start = p;
++        while (*p != '\0' && *p != ',' && *p != ' ')
++            p++;
++        size_t n = (size_t)(p - start);
++        if (n == 5 && strncmp(start, "all", 5) == 0)
++            return 1;
++        /* Callers pass the channel name in __func__-independent form; match the
++         * prefix up to the final NOP marker by comparing the whole token. */
++        if (strlen(chan) >= n && strncmp(chan, start, n) == 0)
++            return 1;
++    }
++    return 0;
++}
+diff --git a/kernel/task.c b/kernel/task.c
+index 9062ca2..c7333ce 100644
+--- a/kernel/task.c
++++ b/kernel/task.c
+@@ -220,6 +220,8 @@ void task_run_current() {
+             do_exit(self->group->group_exit_code);
+         }
+         if (self->mem == NULL) {
++            if (getenv("ISH_TRACE_TASK") != NULL)
++                fprintf(stderr, "[task] pid=%d has no mm, exiting\n", self->pid);
+             pthread_exit(NULL);
+         }
+         read_wrlock(&self->mem->lock);
+@@ -241,6 +243,8 @@ static void *task_thread(void *vtask) {
+     die("task_thread returned"); // above function call should never return
+ }
+ 
++
++
+ static pthread_attr_t task_thread_attr;
+ __attribute__((constructor)) static void create_attr() {
+     pthread_attr_init(&task_thread_attr);
+@@ -295,8 +299,12 @@ void task_discard_unstarted(struct task *task) {
+ int task_start(struct task *task) {
+     native_offload_freeze_registry();
+     int err = pthread_create(&task->thread, &task_thread_attr, task_thread, task);
+-    if (err != 0)
++    if (err != 0) {
++        /* Surfacing this on stderr is the difference between "the guest can't
++         * start a process" and a bare EPERM three layers up. */
++        fprintf(stderr, "ish: guest thread start failed: %s\n", strerror(err));
+         return err == EAGAIN ? _EAGAIN : _ENOMEM;
++    }
+     return 0;
+ }
+ 
+diff --git a/main.c b/main.c
+index ba9c1ba..ed6d99b 100644
+--- a/main.c
++++ b/main.c
+@@ -186,6 +186,10 @@ static void apply_env_bind_mounts(void) {
+     free(copy);
+ }
+ 
++/* Guest entry for one-shot runs. Implemented in kernel/boot_entry.c, where the
++ * kernel headers that define the boot argument hook are visible. */
++int ish_boot_once(int argc, char *const argv[], const char *envp);
++
+ int main(int argc, char *const argv[]) {
+     // Save host terminal settings so we can restore on exit
+     if (isatty(STDIN_FILENO)) {
+@@ -242,7 +246,13 @@ int main(int argc, char *const argv[]) {
+     const char *term = getenv("TERM");
+     if (term && term[0] != '\0')
+         append_boot_env(envp, sizeof(envp), &p, "TERM=%s", term);
+-    int err = xX_main_Xx(argc, argv, envp);
++    int err;
++#ifdef ISH_BOOT_ARGS
++    if (getenv("ISH_SHELL_SCRIPT") != NULL || getenv("PB_ARGV_B64") != NULL)
++        err = ish_boot_once(argc, argv, envp);
++    else
++#endif
++        err = xX_main_Xx(argc, argv, envp);
+     if (err < 0) {
+         fprintf(stderr, "xX_main_Xx: %s\n", strerror(-err));
+         return err;
+diff --git a/meson.build b/meson.build
+index 70b5713..3b04520 100644
+--- a/meson.build
++++ b/meson.build
+@@ -58,7 +58,8 @@ librt = cc.find_library('rt', required: false)
+ libm = cc.find_library('m', required: false)
+ libdl = cc.find_library('dl', required: false)
+ sqlite3 = cc.find_library('sqlite3')
+-dependencies = [librt, libm, libdl, threads, sqlite3]
++add_project_arguments('-DISH_BOOT_ARGS=1', language: 'c')
++dependencies = [librt, libm, libdl, threads, sqlite3, cc.find_library('execinfo', required: false)]
+ 
+ subdir('vdso/arm64')
+ vdso_inc = include_directories('vdso/arm64')
+@@ -142,6 +143,9 @@ if get_option('kernel') == 'ish'
+         'kernel/ptrace.c',
+         'kernel/native_offload.c',
+         'kernel/native_fs.c',
++        'kernel/native_spawn_linux.c',
++        'kernel/boot_entry.c',
++        'kernel/boot_pipe.c',
+         'kernel/native_cancel.c',
+         'kernel/native_io.c',
+ 
+@@ -188,6 +192,7 @@ if get_option('kernel') == 'ish'
+         'util/sync.c',
+         'util/fifo.c',
+         'util/fchdir.c',
++        'util/base64.c',
+ 
+         'platform/' + host_machine.system() + '.c',
+     ]
+diff --git a/platform/host_context_aarch64.h b/platform/host_context_aarch64.h
+index 65dc030..e663d6e 100644
+--- a/platform/host_context_aarch64.h
++++ b/platform/host_context_aarch64.h
+@@ -5,7 +5,8 @@
+ #include <stdint.h>
+ #include <ucontext.h>
+ 
+-#if defined(__linux__) && defined(__aarch64__)
++/* musl's bits/signal.h already defines sigcontext; only glibc needs kernel headers here */
++#if defined(__linux__) && defined(__aarch64__) && defined(__GLIBC__)
+ #include <asm/sigcontext.h>
+ #endif
+ 
+diff --git a/platform/linux.c b/platform/linux.c
+index ba0d9c9..9193e46 100644
+--- a/platform/linux.c
++++ b/platform/linux.c
+@@ -87,7 +87,11 @@ struct platform_sysinfo platform_get_sysinfo(void) {
+ struct platform_thread_cpu_usage platform_get_thread_cpu_usage(void) {
+     struct rusage usage = {};
+     int err = getrusage(RUSAGE_THREAD, &usage);
+-    assert(err == 0);
++    if (err != 0) {
++        /* iSH has no per-thread rusage; fall back to process-wide, then to zero. */
++        memset(&usage, 0, sizeof(usage));
++        getrusage(RUSAGE_SELF, &usage);
++    }
+     return (struct platform_thread_cpu_usage) {
+         .user_sec = usage.ru_utime.tv_sec,
+         .user_usec = usage.ru_utime.tv_usec,
+diff --git a/tools/fakefs.c b/tools/fakefs.c
+index 3e91ec0..5a728bd 100644
+--- a/tools/fakefs.c
++++ b/tools/fakefs.c
+@@ -327,11 +327,9 @@ bool fakefs_export(const char *fs, const char *archive_path, struct fakefsify_er
+             POSIX_ERR();
+         }
+         archive_entry_set_size(entry, real_stat.st_size);
+-#if __APPLE__
+-#define TIMESPEC(x) st_##x##timespec
+-#elif __linux__
++/* Apple SDKs expose both spellings via macros; only the POSIX one is portable
++ * across Darwin, glibc and musl. */
+ #define TIMESPEC(x) st_##x##tim
+-#endif
+         archive_entry_set_atime(entry, real_stat.st_atime, real_stat.TIMESPEC(a).tv_nsec);
+         archive_entry_set_mtime(entry, real_stat.st_mtime, real_stat.TIMESPEC(m).tv_nsec);
+         archive_entry_set_ctime(entry, real_stat.st_ctime, real_stat.TIMESPEC(c).tv_nsec);
+diff --git a/xX_main_Xx.h b/xX_main_Xx.h
+index 968225b..9143c06 100644
+--- a/xX_main_Xx.h
++++ b/xX_main_Xx.h
+@@ -43,7 +43,20 @@ static void exit_handler(struct task *task, int code) {
+ // this function parses command line arguments and initializes global
+ // data structures. thanks programming discussions discord server for the name.
+ // https://discord.gg/9zT7NHP
++/* Set by hosts that cannot pass argv reliably (the iOS runtime): when non-zero
++ * the guest command line comes from here and the CLI is not parsed at all. */
++#ifdef ISH_BOOT_ARGS
++extern char **g_boot_argv;
++extern int g_boot_argc;
++#endif
++
+ static inline int xX_main_Xx(int argc, char *const argv[], const char *envp) {
++#ifdef ISH_BOOT_ARGS
++    if (g_boot_argc > 0) {
++        argc = g_boot_argc;
++        argv = g_boot_argv;
++    }
++#endif
+ #ifdef __APPLE__
+     // Enable case-sensitive filesystem mode on macOS, if possible.
+     // In order for this to succeed, either we need to be running as root, or
+@@ -100,8 +113,13 @@ static inline int xX_main_Xx(int argc, char *const argv[], const char *envp) {
+         strcat(root_realpath, "/data");
+     }
+     int err = mount_root(fs, root_realpath);
+-    if (err < 0)
++    if (err < 0) {
++        /* A failed guest boot must be legible from the host: the caller only
++         * sees an exit status, and "no such file or directory" for a present
++         * fakefs is otherwise indistinguishable from a wrong path. */
++        fprintf(stderr, "ish: cannot mount %s at /: %s\n", root_realpath, strerror(-err));
+         return err;
++    }
+ 
+     become_first_process();
+     current->thread = pthread_self();
+new file: kernel/boot_entry.c
+new file: kernel/boot_pipe.c
+new file: kernel/native_spawn.h
+new file: kernel/native_spawn_child.c
+new file: kernel/native_spawn_linux.c
+new file: kernel/native_spawn_stub.c
+new file: tools/archive_shim.c
+new file: tools/archive_stub.c
+new file: util/base64.c

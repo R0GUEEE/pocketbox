@@ -28,6 +28,15 @@ pocketbox serve --listen tcp://0.0.0.0:2375    # Docker API
 info, containers (list/create/start/stop/restart/kill/wait/logs), images
 (list/pull/delete), volumes.
 
+## iOS app
+
+`PocketBox/` is the SwiftUI app (XcodeGen `project.yml`, sources under
+`PocketBox/Sources/PocketBox`): container list with start/stop/logs, image pull,
+console, and an engine tab. It runs the engine inside an arm64 Linux guest; see
+`runtime/README.md` for what is proven and what still needs a macOS linker.
+`scripts/package-app.sh` assembles the app bundle with the runtime and engine
+binaries and refuses to ship a non-Mach-O or a non-static-ELF binary.
+
 ## Layout
 
 | package | role |
