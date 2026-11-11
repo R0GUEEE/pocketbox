@@ -1,0 +1,88 @@
+name: engine
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+          cache: true
+
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .) || true
+          if [ -n "$out" ]; then echo "unformatted:"; echo "$out"; exit 1; fi
+
+      - name: vet
+        run: go vet ./...
+
+      - name: unit tests
+        run: go test ./... -count=1
+
+      - name: registry integration (Docker Hub)
+        run: POCKETBOX_PROBE=1 go test ./pkg/images -run 'TestPullBusybox|TestPullAlpine|TestPullViaBridge|TestPullMultiLayer' -count=1 -v
+
+      - name: engine end to end (pull, create, start, logs)
+        run: |
+          set -eux
+          go build -o /tmp/pocketbox ./cmd/pocketbox
+          export POCKETBOX_DATA=$(mktemp -d)
+          /tmp/pocketbox pull busybox:1.36
+          /tmp/pocketbox images
+          /tmp/pocketbox ps -a
+          /tmp/pocketbox run -d --name smoke busybox:1.36 /bin/sh -c 'echo smoke-ok; sleep 1'
+          sleep 2
+          /tmp/pocketbox logs smoke
+          /tmp/pocketbox ps -a
+          /tmp/pocketbox logs smoke | grep -q smoke-ok
+
+      - name: daemon API
+        run: |
+          set -eux
+          export POCKETBOX_DATA=$(mktemp -d)
+          /tmp/pocketbox serve --listen tcp://127.0.0.1:23759 & echo $! > /tmp/pb.pid
+          sleep 1
+          curl -fsS http://127.0.0.1:23759/_ping
+          curl -fsS http://127.0.0.1:23759/version | grep -q ApiVersion
+          curl -fsS -X POST 'http://127.0.0.1:23759/images/create?fromImage=alpine&tag=3.20'
+          curl -fsS http://127.0.0.1:23759/images/json | grep -q alpine
+          curl -fsS -X POST 'http://127.0.0.1:23759/containers/create?name=api-smoke' \
+            -H 'Content-Type: application/json' \
+            -d '{"Image":"alpine:3.20","Cmd":["/bin/echo","api-ok"]}' > /tmp/create.json
+          ID=$(sed -n 's/.*"Id":"\([a-f0-9]*\)".*/\1/p' /tmp/create.json)
+          curl -fsS -X POST "http://127.0.0.1:23759/containers/$ID/start"
+          sleep 2
+          curl -fsS "http://127.0.0.1:23759/containers/$ID/logs" | grep -q api-ok
+          curl -fsS http://127.0.0.1:23759/containers/json | grep -q api-smoke
+          kill "$(cat /tmp/pb.pid)"
+
+  build:
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      matrix:
+        target: [linux/arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: cross build
+        run: |
+          set -eux
+          for os in linux darwin; do
+            GOOS=$os GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o /tmp/pocketbox-$os-arm64 ./cmd/pocketbox
+          done
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -tags pocketbox_guest -trimpath -ldflags '-s -w' -o /tmp/pocketbox-guest ./cmd/pocketbox
+          ls -l /tmp/pocketbox-*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pocketbox-arm64
+          path: /tmp/pocketbox-*

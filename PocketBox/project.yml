@@ -1,0 +1,38 @@
+Name: pocketbox
+Options:
+  bundleIdPrefix: dev.pocketbox
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGNING_ALLOWED: NO
+    CODE_SIGNING_REQUIRED: NO
+    ENABLE_BITCODE: NO
+    OTHER_LDFLAGS: "-lc++"
+    IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+targets:
+  PocketBox:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.pocketbox.app
+        PRODUCT_NAME: PocketBox
+        INFOPLIST_FILE: Sources/PocketBox/Info.plist
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SWIFT_OPTIMIZATION_LEVEL: "-O"
+        GCC_OPTIMIZATION_LEVEL: "s"
+    dependencies:
+      - framework: Frameworks/ish.framework
+        embed: true
+      - framework: Frameworks/pocketboxd.framework
+        embed: true
+    scheme:
+      testTargets: []
