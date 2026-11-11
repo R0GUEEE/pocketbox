@@ -27,10 +27,16 @@ func New(logDir string) *Runner { return &Runner{LogDir: logDir} }
 
 type process struct {
 	cmd *exec.Cmd
+	log *os.File
 }
 
 func (p *process) Wait() (int, error) {
 	err := p.cmd.Wait()
+	if p.log != nil {
+		_ = p.log.Sync()
+		_ = p.log.Close()
+		p.log = nil
+	}
 	if err == nil {
 		return 0, nil
 	}
@@ -102,8 +108,9 @@ func (r *Runner) Start(spec *engine.Spec) (engine.Process, error) {
 		logf.Close()
 		return nil, err
 	}
-	go func() { _ = logf.Close() }()
-	return &process{cmd: cmd}, nil
+	// The child holds a duplicate of the descriptor; the engine keeps its own
+	// handle open until Wait so nothing closes behind a running container.
+	return &process{cmd: cmd, log: logf}, nil
 }
 
 // prefixWriter keeps log lines intact while serialising concurrent writes.
